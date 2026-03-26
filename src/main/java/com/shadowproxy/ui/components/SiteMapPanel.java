@@ -36,9 +36,11 @@ import java.net.URI;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class SiteMapPanel extends JPanel implements HistoryListener {
@@ -54,7 +56,9 @@ public final class SiteMapPanel extends JPanel implements HistoryListener {
     private final JLabel statusLabel = new JLabel("Loading site map...");
     private final JTextField filterField = new JTextField(24);
     private final JComboBox<String> filterCombo = new JComboBox<>(new String[]{"Show all items", "Show only in-scope items", "Show only items with issues"});
+    private final Set<String> scopePrefixes = new LinkedHashSet<>();
     private final AtomicBoolean rebuildPending = new AtomicBoolean(false);
+    private volatile List<HttpExchangeRecord> latestSnapshot = List.of();
 
     public SiteMapPanel(HistoryRepository historyRepository, ScanIssueStore scanIssueStore, ToolRouter toolRouter) {
         super(new BorderLayout(8, 8));
@@ -102,10 +106,11 @@ public final class SiteMapPanel extends JPanel implements HistoryListener {
         toolbar.add(collapseAll);
         expandAll.addActionListener(e -> expandTree(true));
         collapseAll.addActionListener(e -> expandTree(false));
-        addToScope.addActionListener(e -> statusLabel.setText("Added selected item to scope."));
-        removeFromScope.addActionListener(e -> statusLabel.setText("Removed selected item from scope."));
+        addToScope.addActionListener(e -> addSelectedToScope());
+        removeFromScope.addActionListener(e -> removeSelectedFromScope());
         delete.addActionListener(e -> statusLabel.setText("Delete is not wired yet."));
         filterField.addActionListener(e -> applyFilter());
+        filterCombo.addActionListener(e -> applyFilter());
         return toolbar;
     }
 
@@ -196,10 +201,11 @@ public final class SiteMapPanel extends JPanel implements HistoryListener {
 
     private void rebuildFromHistory() {
         List<HttpExchangeRecord> snapshot = historyRepository.findAll();
+        latestSnapshot = List.copyOf(snapshot);
         new SwingWorker<DefaultTreeModel, Void>() {
             @Override
             protected DefaultTreeModel doInBackground() {
-                return buildTreeModel(snapshot);
+                return buildTreeModel(snapshot, filterField.getText(), currentFilterMode(), Set.copyOf(scopePrefixes));
             }
 
             @Override
@@ -218,6 +224,10 @@ public final class SiteMapPanel extends JPanel implements HistoryListener {
     }
 
     private DefaultTreeModel buildTreeModel(List<HttpExchangeRecord> exchanges) {
+        return buildTreeModel(exchanges, filterField.getText(), currentFilterMode(), Set.copyOf(scopePrefixes));
+    }
+
+    private DefaultTreeModel buildTreeModel(List<HttpExchangeRecord> exchanges, String filterText, FilterMode filterMode, Set<String> scopes) {
         DefaultMutableTreeNode root = new DefaultMutableTreeNode(new SiteMapEntry("Site map", "", null));
         Map<String, DefaultMutableTreeNode> hostNodes = new LinkedHashMap<>();
         for (HttpExchangeRecord exchange : exchanges) {
@@ -234,6 +244,7 @@ public final class SiteMapPanel extends JPanel implements HistoryListener {
             SiteMapNodeBuilder builder = new SiteMapNodeBuilder(hostNode, host);
             builder.addExchange(exchange, uri);
         }
+        pruneTree(root, filterText, filterMode, scopes);
         sortRecursive(root);
         return new DefaultTreeModel(root);
     }
@@ -318,12 +329,143 @@ public final class SiteMapPanel extends JPanel implements HistoryListener {
     }
 
     private void applyFilter() {
-        String term = filterField.getText().trim().toLowerCase();
-        if (term.isBlank()) {
-            statusLabel.setText("Showing all site map items.");
+        rebuildPending.set(false);
+        rebuildFromSnapshot();
+    }
+
+    private void rebuildFromSnapshot() {
+        List<HttpExchangeRecord> snapshot = latestSnapshot.isEmpty() ? historyRepository.findAll() : latestSnapshot;
+        latestSnapshot = List.copyOf(snapshot);
+        new SwingWorker<DefaultTreeModel, Void>() {
+            @Override
+            protected DefaultTreeModel doInBackground() {
+                return buildTreeModel(snapshot, filterField.getText(), currentFilterMode(), Set.copyOf(scopePrefixes));
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    treeModel.setRoot((DefaultMutableTreeNode) get().getRoot());
+                    treeModel.reload();
+                    expandTree(true);
+                    statusLabel.setText(buildFilterStatus(snapshot.size()));
+                } catch (Exception ex) {
+                    statusLabel.setText("Unable to apply filter: " + ex.getMessage());
+                }
+            }
+        }.execute();
+    }
+
+    private FilterMode currentFilterMode() {
+        return switch (filterCombo.getSelectedIndex()) {
+            case 1 -> FilterMode.IN_SCOPE;
+            case 2 -> FilterMode.WITH_ISSUES;
+            default -> FilterMode.ALL;
+        };
+    }
+
+    private String buildFilterStatus(int requestCount) {
+        String term = filterField.getText().trim();
+        String mode = switch (currentFilterMode()) {
+            case IN_SCOPE -> "in-scope";
+            case WITH_ISSUES -> "issues";
+            default -> "all";
+        };
+        if (term.isBlank() && currentFilterMode() == FilterMode.ALL) {
+            return "Loaded " + requestCount + " requests into site map.";
+        }
+        StringBuilder message = new StringBuilder("Filter applied: ").append(mode);
+        if (!term.isBlank()) {
+            message.append(" / ").append(term);
+        }
+        return message.toString();
+    }
+
+    private void addSelectedToScope() {
+        SiteMapEntry entry = selectedEntry();
+        if (entry == null || entry.url().isBlank()) {
+            statusLabel.setText("Select a node with a URL first.");
             return;
         }
-        statusLabel.setText("Filter applied: " + term);
+        scopePrefixes.add(entry.url());
+        statusLabel.setText("Added to scope: " + entry.url());
+        applyFilter();
+    }
+
+    private void removeSelectedFromScope() {
+        SiteMapEntry entry = selectedEntry();
+        if (entry == null || entry.url().isBlank()) {
+            statusLabel.setText("Select a node with a URL first.");
+            return;
+        }
+        scopePrefixes.removeIf(prefix -> entry.url().startsWith(prefix) || prefix.startsWith(entry.url()));
+        statusLabel.setText("Removed from scope: " + entry.url());
+        applyFilter();
+    }
+
+    private SiteMapEntry selectedEntry() {
+        DefaultMutableTreeNode selected = (DefaultMutableTreeNode) tree.getLastSelectedPathComponent();
+        if (selected == null) {
+            return null;
+        }
+        Object user = selected.getUserObject();
+        return user instanceof SiteMapEntry entry ? entry : null;
+    }
+
+    private boolean pruneTree(DefaultMutableTreeNode node, String filterText, FilterMode mode, Set<String> scopes) {
+        List<DefaultMutableTreeNode> children = new ArrayList<>();
+        for (int i = 0; i < node.getChildCount(); i++) {
+            children.add((DefaultMutableTreeNode) node.getChildAt(i));
+        }
+        node.removeAllChildren();
+
+        boolean keepSelf = node.isRoot();
+        Object user = node.getUserObject();
+        if (user instanceof SiteMapEntry entry) {
+            keepSelf = matchesFilter(entry, filterText, mode, scopes);
+        }
+
+        boolean keepDescendant = false;
+        for (DefaultMutableTreeNode child : children) {
+            if (pruneTree(child, filterText, mode, scopes)) {
+                node.add(child);
+                keepDescendant = true;
+            }
+        }
+        return keepSelf || keepDescendant;
+    }
+
+    private boolean matchesFilter(SiteMapEntry entry, String filterText, FilterMode mode, Set<String> scopes) {
+        if (entry.label().equals("Site map")) {
+            return true;
+        }
+        boolean textMatch = filterText == null || filterText.isBlank()
+                || entry.label().toLowerCase().contains(filterText.toLowerCase().trim())
+                || entry.url().toLowerCase().contains(filterText.toLowerCase().trim());
+        boolean scopeMatch = mode != FilterMode.IN_SCOPE || isInScope(entry.url(), scopes);
+        boolean issueMatch = mode != FilterMode.WITH_ISSUES || hasIssues(entry.url());
+        return textMatch && scopeMatch && issueMatch;
+    }
+
+    private boolean isInScope(String url, Set<String> scopes) {
+        if (scopes.isEmpty()) {
+            return false;
+        }
+        for (String scope : scopes) {
+            if (url.startsWith(scope)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean hasIssues(String url) {
+        for (ScanIssue issue : scanIssueStore.findAll()) {
+            if (issue.url().contains(url) || url.contains(issue.url())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static URI parseUri(String url) {
@@ -404,5 +546,11 @@ public final class SiteMapPanel extends JPanel implements HistoryListener {
         public String toString() {
             return count > 1 ? label + " (" + count + ")" : label;
         }
+    }
+
+    private enum FilterMode {
+        ALL,
+        IN_SCOPE,
+        WITH_ISSUES
     }
 }
