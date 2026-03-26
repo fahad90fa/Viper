@@ -2,9 +2,14 @@ package com.shadowproxy.ui.modules;
 
 import com.shadowproxy.config.AppConfig;
 import com.shadowproxy.core.proxy.InterceptionManager;
+import com.shadowproxy.core.proxy.JavaHttpForwarder;
 import com.shadowproxy.core.proxy.PendingIntercept;
 import com.shadowproxy.core.proxy.ProxyServer;
+import com.shadowproxy.core.intruder.IntruderAttackResult;
+import com.shadowproxy.core.intruder.IntruderAttackRunner;
+import com.shadowproxy.core.intruder.IntruderAttackType;
 import com.shadowproxy.core.routing.ToolRouter;
+import com.shadowproxy.core.routing.ToolRouterListener;
 import com.shadowproxy.core.routing.ToolType;
 import com.shadowproxy.core.scanner.ScanIssueStore;
 import com.shadowproxy.domain.http.HttpExchangeRecord;
@@ -16,7 +21,10 @@ import com.shadowproxy.domain.scanner.ScanIssue;
 import com.shadowproxy.persistence.HistoryRepository;
 import com.shadowproxy.ui.components.IconFactory;
 import com.shadowproxy.ui.components.MessageEditorPanel;
+import com.shadowproxy.ui.components.SiteMapPanel;
+import com.shadowproxy.ui.components.ScannerWorkspacePanel;
 import com.shadowproxy.util.HttpMessageCodec;
+import com.shadowproxy.ui.components.WorkspaceTabs;
 import org.jfree.chart.ChartFactory;
 import org.jfree.chart.ChartPanel;
 import org.jfree.chart.JFreeChart;
@@ -32,6 +40,7 @@ import javax.swing.DefaultListModel;
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
+import javax.swing.DefaultComboBoxModel;
 import javax.swing.JComponent;
 import javax.swing.JDialog;
 import javax.swing.JFrame;
@@ -45,6 +54,7 @@ import javax.swing.JProgressBar;
 import javax.swing.JScrollPane;
 import javax.swing.JSplitPane;
 import javax.swing.JSpinner;
+import javax.swing.JSlider;
 import javax.swing.JTabbedPane;
 import javax.swing.JTable;
 import javax.swing.JTextArea;
@@ -52,6 +62,7 @@ import javax.swing.JTextField;
 import javax.swing.JTree;
 import javax.swing.ListSelectionModel;
 import javax.swing.SpinnerNumberModel;
+import javax.swing.SwingWorker;
 import javax.swing.SwingUtilities;
 import javax.swing.Timer;
 import javax.swing.UIManager;
@@ -80,7 +91,10 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.nio.charset.StandardCharsets;
 
 public final class ModulePanelFactory {
     private ModulePanelFactory() {
@@ -113,64 +127,8 @@ public final class ModulePanelFactory {
         return root;
     }
 
-    public static JPanel targetPanel(HistoryRepository historyRepository, ScanIssueStore scanIssueStore) {
-        JPanel root = new JPanel(new BorderLayout(8, 8));
-        root.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
-        root.add(buildTargetToolbar(), BorderLayout.NORTH);
-
-        DefaultMutableTreeNode treeRoot = new DefaultMutableTreeNode("https://example.com");
-        DefaultMutableTreeNode branchRoot = new DefaultMutableTreeNode("/");
-        branchRoot.add(new DefaultMutableTreeNode("/login"));
-        DefaultMutableTreeNode api = new DefaultMutableTreeNode("/api");
-        api.add(new DefaultMutableTreeNode("/api/users"));
-        api.add(new DefaultMutableTreeNode("/api/products"));
-        branchRoot.add(api);
-        branchRoot.add(new DefaultMutableTreeNode("/admin"));
-        treeRoot.add(branchRoot);
-        DefaultMutableTreeNode staticBranch = new DefaultMutableTreeNode("/static");
-        staticBranch.add(new DefaultMutableTreeNode("/static/css"));
-        staticBranch.add(new DefaultMutableTreeNode("/static/js"));
-        treeRoot.add(staticBranch);
-        treeRoot.add(new DefaultMutableTreeNode("https://cdn.example.com"));
-
-        JTree siteMap = new JTree(new DefaultTreeModel(treeRoot));
-        siteMap.setRootVisible(true);
-        siteMap.setShowsRootHandles(true);
-        installTreeContextMenu(siteMap);
-
-        JTable issuesTable = new JTable(new DefaultTableModel(new Object[]{"Severity", "Confidence", "Issue Type", "Path"}, 0));
-        DefaultTableModel issuesModel = (DefaultTableModel) issuesTable.getModel();
-        for (ScanIssue issue : sampleOrStoredIssues(scanIssueStore)) {
-            issuesModel.addRow(new Object[]{issue.severity(), issue.confidence(), issue.name(), issue.url()});
-        }
-        MessageEditorPanel requestViewer = new MessageEditorPanel(false);
-        requestViewer.setRawText(sampleRequest());
-        MessageEditorPanel responseViewer = new MessageEditorPanel(false);
-        responseViewer.setRawText(sampleResponse());
-
-        JPanel issueDetails = buildDetailsPanel("""
-                SQL Injection
-
-                The selected item has evidence of parameter tampering and reflective payload behavior.
-                """,
-                """
-                        Remediation:
-                        - Use parameterized queries.
-                        - Validate input server-side.
-                        - Enforce least-privilege database accounts.
-                        """);
-
-        JTabbedPane detailTabs = new JTabbedPane();
-        detailTabs.addTab("Issues", buildIssuesTab(issuesTable, issueDetails));
-        detailTabs.addTab("Request", requestViewer);
-        detailTabs.addTab("Response", responseViewer);
-
-        JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT,
-                wrapWithTitle(siteMap, "Site Map"),
-                detailTabs);
-        splitPane.setResizeWeight(0.3);
-        root.add(splitPane, BorderLayout.CENTER);
-        return root;
+    public static JPanel targetPanel(HistoryRepository historyRepository, ScanIssueStore scanIssueStore, ToolRouter toolRouter) {
+        return new SiteMapPanel(historyRepository, scanIssueStore, toolRouter);
     }
 
     public static JPanel proxyPanel(AppConfig appConfig,
@@ -208,81 +166,16 @@ public final class ModulePanelFactory {
         return root;
     }
 
-    public static JComponent repeaterPanel(ToolRouter toolRouter) {
-        JPanel root = new JPanel(new BorderLayout(8, 8));
-        root.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
-        WorkspaceTabContainer tabs = new WorkspaceTabContainer("Repeater");
-        tabs.addRepeaterTab(toolRouter, 1);
-        JButton add = new JButton("Add repeater");
-        add.addActionListener(e -> tabs.addRepeaterTab(toolRouter, tabs.tabCount() + 1));
-        JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        toolbar.add(add);
-        toolbar.add(new JLabel("Ctrl+Space sends the request"));
-        root.add(toolbar, BorderLayout.NORTH);
-        root.add(tabs, BorderLayout.CENTER);
-        return root;
+    public static JComponent repeaterPanel(ToolRouter toolRouter, HistoryRepository historyRepository) {
+        return new RepeaterWorkspacePanel(toolRouter, historyRepository);
     }
 
-    public static JComponent intruderPanel() {
-        JPanel root = new JPanel(new BorderLayout(8, 8));
-        root.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
-        root.add(buildIntruderToolbar(), BorderLayout.NORTH);
-        WorkspaceTabContainer tabs = new WorkspaceTabContainer("Intruder");
-        tabs.addTab("Attack 1", buildIntruderAttackTab());
-        root.add(tabs, BorderLayout.CENTER);
-        return root;
+    public static JComponent intruderPanel(ToolRouter toolRouter, HistoryRepository historyRepository) {
+        return new IntruderWorkspacePanel(toolRouter, historyRepository);
     }
 
-    public static JPanel scannerPanel(ScanIssueStore scanIssueStore) {
-        JPanel root = new JPanel(new BorderLayout(8, 8));
-        root.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
-        root.add(buildScannerToolbar(), BorderLayout.NORTH);
-
-        JTable queue = new JTable(new DefaultTableModel(new Object[]{"Status", "Target", "Progress", "Remaining", "Completed", "Requests", "Elapsed"}, 0));
-        DefaultTableModel queueModel = (DefaultTableModel) queue.getModel();
-        queueModel.addRow(new Object[]{"Running", "https://example.com", "45%", 125, 75, 240, "02:15"});
-        queueModel.addRow(new Object[]{"Queued", "https://cdn.example.com", "0%", 240, 0, 0, "00:00"});
-
-        JTextArea activityLog = new JTextArea("""
-                [12:34:56] [HIGH] SQL Injection found in parameter 'id' at /api/users?id=1
-                [12:35:12] [MEDIUM] Missing security headers at /admin
-                """);
-        activityLog.setEditable(false);
-
-        JTable issues = new JTable(new DefaultTableModel(new Object[]{"Severity", "Confidence", "Issue Type", "URL", "Count"}, 0));
-        DefaultTableModel issuesModel = (DefaultTableModel) issues.getModel();
-        for (ScanIssue issue : sampleOrStoredIssues(scanIssueStore)) {
-            issuesModel.addRow(new Object[]{issue.severity(), issue.confidence(), issue.name(), issue.url(), 1});
-        }
-
-        JTextArea issueDetails = new JTextArea("""
-                Issue Title
-
-                Full description and remediation guidance appear here, including evidence markers and response highlights.
-                """);
-        issueDetails.setEditable(false);
-
-        JTabbedPane issueTabs = new JTabbedPane();
-        issueTabs.addTab("Description", wrapWithPadding(issueDetails));
-        issueTabs.addTab("Request/Response", buildIssueMessageView());
-        issueTabs.addTab("Advisory", wrapWithPadding(new JTextArea("""
-                Detailed technical explanation, proof-of-concept examples, and recommended fixes.
-                """)));
-
-        JSplitPane issueSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT,
-                wrapWithTitle(new JScrollPane(issues), "Issues"),
-                issueTabs);
-        issueSplit.setResizeWeight(0.4);
-
-        JSplitPane bottomSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT,
-                wrapWithTitle(new JScrollPane(queue), "Scan Queue"),
-                new JSplitPane(JSplitPane.VERTICAL_SPLIT,
-                        wrapWithTitle(new JScrollPane(activityLog), "Issue Activity"),
-                        issueSplit));
-        ((JSplitPane) bottomSplit.getRightComponent()).setResizeWeight(0.2);
-        bottomSplit.setResizeWeight(0.3);
-        root.add(bottomSplit, BorderLayout.CENTER);
-        return root;
+    public static JPanel scannerPanel(HistoryRepository historyRepository, ScanIssueStore scanIssueStore, ToolRouter toolRouter) {
+        return new ScannerWorkspacePanel(historyRepository, scanIssueStore, toolRouter);
     }
 
     public static JComponent sequencerPanel() {
@@ -358,34 +251,8 @@ public final class ModulePanelFactory {
         return root;
     }
 
-    public static JComponent comparerPanel() {
-        JPanel root = new JPanel(new BorderLayout(8, 8));
-        root.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
-        JPanel top = new JPanel(new GridLayout(1, 3, 8, 8));
-        top.add(buildComparerSource("Item 1"));
-        top.add(buildComparerControls());
-        top.add(buildComparerSource("Item 2"));
-        root.add(top, BorderLayout.NORTH);
-
-        JTextArea left = new JTextArea(sampleRequest());
-        JTextArea right = new JTextArea(sampleRequest().replace("example.com", "api.example.com").replace("id=1", "id=2"));
-        left.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
-        right.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
-        JSplitPane diff = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT,
-                wrapWithTitle(new JScrollPane(left), "Left"),
-                wrapWithTitle(new JScrollPane(right), "Right"));
-        diff.setResizeWeight(0.5);
-
-        JPanel stats = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        stats.add(new JLabel("Total differences: 15"));
-        stats.add(new JLabel("Added: 234 bytes"));
-        stats.add(new JLabel("Removed: 123 bytes"));
-        stats.add(new JLabel("Modified: 45 bytes"));
-
-        JSplitPane bottom = new JSplitPane(JSplitPane.VERTICAL_SPLIT, diff, stats);
-        bottom.setResizeWeight(0.9);
-        root.add(bottom, BorderLayout.CENTER);
-        return root;
+    public static JComponent comparerPanel(ToolRouter toolRouter) {
+        return new ComparerWorkspacePanel(toolRouter);
     }
 
     public static JComponent extenderPanel() {
@@ -664,64 +531,215 @@ public final class ModulePanelFactory {
         return new JScrollPane(table);
     }
 
-    private static JPanel buildIntruderToolbar() {
-        JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        toolbar.add(new JButton("Start attack"));
-        toolbar.add(new JButton("Configure"));
-        toolbar.add(new JComboBox<>(new String[]{"Save config", "Load config", "Copy entire attack to new tab"}));
-        return toolbar;
+    private static final class IntruderWorkspacePanel extends JPanel {
+        private final WorkspaceTabs tabs = new WorkspaceTabs();
+        private final ToolRouter toolRouter;
+        private final HistoryRepository historyRepository;
+        private final AtomicInteger sequence = new AtomicInteger(1);
+        private final ToolRouterListener listener;
+
+        private IntruderWorkspacePanel(ToolRouter toolRouter, HistoryRepository historyRepository) {
+            super(new BorderLayout(8, 8));
+            this.toolRouter = toolRouter;
+            this.historyRepository = historyRepository;
+
+            JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT));
+            JButton addBlank = new JButton("Start attack");
+            JButton openQueue = new JButton("Open queued item");
+            toolbar.add(addBlank);
+            toolbar.add(openQueue);
+            toolbar.add(new JComboBox<>(new String[]{"Save config", "Load config", "Copy entire attack to new tab"}));
+            add(toolbar, BorderLayout.NORTH);
+            add(tabs, BorderLayout.CENTER);
+
+            addBlank.addActionListener(e -> addAttackTab(null));
+            openQueue.addActionListener(e -> {
+                List<HttpExchangeRecord> queue = toolRouter.getToolQueue(ToolType.INTRUDER);
+                if (!queue.isEmpty()) {
+                    addAttackTab(queue.get(queue.size() - 1));
+                }
+            });
+
+            listener = (toolType, exchangeRecord) -> SwingUtilities.invokeLater(() -> addAttackTab(exchangeRecord));
+            toolRouter.addListener(ToolType.INTRUDER, listener);
+
+            List<HttpExchangeRecord> initial = toolRouter.getToolQueue(ToolType.INTRUDER);
+            if (initial.isEmpty()) {
+                addAttackTab(null);
+            } else {
+                initial.forEach(this::addAttackTab);
+            }
+        }
+
+        private void addAttackTab(HttpExchangeRecord exchangeRecord) {
+            IntruderAttackPanel panel = new IntruderAttackPanel(exchangeRecord, historyRepository);
+            String title = "Attack " + sequence.getAndIncrement();
+            tabs.addWorkspaceTab(title, IconFactory.of("intruder", new Color(255, 140, 0), 18), panel, true);
+        }
     }
 
-    private static JComponent buildIntruderAttackTab() {
-        JPanel root = new JPanel();
-        root.setLayout(new BoxLayout(root, BoxLayout.Y_AXIS));
-        root.add(buildAttackSection("Target", buildSimpleForm("Host: example.com\nPort: 443\nUse HTTPS: checked")));
-        root.add(Box.createVerticalStrut(8));
-        root.add(buildAttackSection("Positions", buildIntruderPositions()));
-        root.add(Box.createVerticalStrut(8));
-        root.add(buildAttackSection("Payloads", buildIntruderPayloads()));
-        root.add(Box.createVerticalStrut(8));
-        root.add(buildAttackSection("Options", buildIntruderOptions()));
-        return new JScrollPane(root);
+    private static final class IntruderAttackPanel extends JPanel {
+        private final HistoryRepository historyRepository;
+        private final MessageEditorPanel requestEditor = new MessageEditorPanel(true);
+        private final JTextArea payloadsArea = new JTextArea(10, 40);
+        private final DefaultTableModel resultsModel = new DefaultTableModel(new Object[]{"Request #", "Payload", "Status", "Length", "Time (ms)", "Error"}, 0);
+        private final JTable resultsTable = new JTable(resultsModel);
+        private final JComboBox<IntruderAttackType> attackType = new JComboBox<>(IntruderAttackType.values());
+        private final JLabel status = new JLabel("Ready");
+        private final AtomicBoolean cancelled = new AtomicBoolean(false);
+        private final IntruderAttackRunner runner = new IntruderAttackRunner();
+
+        private IntruderAttackPanel(HttpExchangeRecord exchangeRecord, HistoryRepository historyRepository) {
+            super(new BorderLayout(8, 8));
+            this.historyRepository = historyRepository;
+
+            JPanel top = new JPanel(new FlowLayout(FlowLayout.LEFT));
+            JButton start = new JButton("Start attack");
+            JButton cancel = new JButton("Cancel");
+            JButton addMarker = new JButton("Add §");
+            JButton clearMarkers = new JButton("Clear §");
+            JButton autoMarkers = new JButton("Auto §");
+            top.add(start);
+            top.add(cancel);
+            top.add(addMarker);
+            top.add(clearMarkers);
+            top.add(autoMarkers);
+            top.add(new JLabel("Attack type:"));
+            top.add(attackType);
+            add(top, BorderLayout.NORTH);
+
+            payloadsArea.setText("admin\nroot\nsuperuser");
+            requestEditor.setRawText(sampleIntruderRequest());
+
+            JSplitPane upperSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT,
+                    buildIntruderPositionsPanel(addMarker, clearMarkers, autoMarkers),
+                    buildIntruderPayloadsPanel());
+            upperSplit.setResizeWeight(0.6);
+
+            JPanel options = new JPanel(new BorderLayout());
+            JTabbedPane optionTabs = new JTabbedPane();
+            optionTabs.addTab("Request Engine", buildSimpleForm("Threads, delays, throttling, timeout, retries"));
+            optionTabs.addTab("Grep - Match", buildSimpleForm("Patterns to search in responses"));
+            optionTabs.addTab("Grep - Extract", buildSimpleForm("Extraction rules and captured values"));
+            optionTabs.addTab("Redirections", buildSimpleForm("Follow redirections: Always / Never / On-site only / In-scope only"));
+            options.add(optionTabs, BorderLayout.CENTER);
+
+            JSplitPane centerSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT, upperSplit, options);
+            centerSplit.setResizeWeight(0.55);
+
+            JPanel resultsPanel = new JPanel(new BorderLayout(8, 8));
+            resultsPanel.add(new JScrollPane(resultsTable), BorderLayout.CENTER);
+            resultsTable.setFillsViewportHeight(true);
+
+            JSplitPane bottomSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT, centerSplit, resultsPanel);
+            bottomSplit.setResizeWeight(0.65);
+            add(bottomSplit, BorderLayout.CENTER);
+            add(status, BorderLayout.SOUTH);
+
+            start.addActionListener(e -> startAttack());
+            cancel.addActionListener(e -> cancelled.set(true));
+
+            loadExchange(exchangeRecord);
+        }
+
+        private JComponent buildIntruderPositionsPanel(JButton addMarker, JButton clearMarkers, JButton autoMarkers) {
+            JPanel panel = new JPanel(new BorderLayout(8, 8));
+            JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT));
+            toolbar.add(new JLabel("Attack positions"));
+            panel.add(toolbar, BorderLayout.NORTH);
+            panel.add(requestEditor, BorderLayout.CENTER);
+
+            addMarker.addActionListener(e -> wrapSelectionWithMarkers());
+            clearMarkers.addActionListener(e -> requestEditor.setRawText(requestEditor.getRawText().replace("§", "")));
+            autoMarkers.addActionListener(e -> autoMarkParameters());
+            return panel;
+        }
+
+        private JComponent buildIntruderPayloadsPanel() {
+            JPanel panel = new JPanel(new BorderLayout(8, 8));
+            JPanel split = new JPanel(new BorderLayout(8, 8));
+            split.add(buildSimpleForm("Payload set: 1\nPayload type: Simple list"), BorderLayout.NORTH);
+            payloadsArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+            split.add(new JScrollPane(payloadsArea), BorderLayout.CENTER);
+            panel.add(split, BorderLayout.CENTER);
+            panel.add(buildSimpleForm("Payload processing and encoding rules"), BorderLayout.SOUTH);
+            return panel;
+        }
+
+        private void loadExchange(HttpExchangeRecord exchangeRecord) {
+            if (exchangeRecord == null) {
+                requestEditor.setRawText(sampleIntruderRequest());
+                return;
+            }
+            requestEditor.setRawText(HttpMessageCodec.toRawRequest(exchangeRecord.request()));
+            status.setText("Loaded exchange from " + exchangeRecord.sourceTool());
+        }
+
+        private void startAttack() {
+            cancelled.set(false);
+            resultsModel.setRowCount(0);
+            List<String> payloads = payloadsArea.getText().lines()
+                    .map(String::trim)
+                    .filter(line -> !line.isBlank())
+                    .toList();
+            String raw = requestEditor.getRawText();
+            IntruderAttackType type = (IntruderAttackType) attackType.getSelectedItem();
+            if (type == null) {
+                status.setText("Select an attack type.");
+                return;
+            }
+            status.setText("Running...");
+            runner.run(raw, type, payloads, this::appendResult, () -> SwingUtilities.invokeLater(() -> status.setText("Completed")), cancelled);
+        }
+
+        private void appendResult(IntruderAttackResult result) {
+            SwingUtilities.invokeLater(() -> resultsModel.addRow(new Object[]{
+                    result.requestNumber(),
+                    result.payloadSummary(),
+                    result.statusCode() < 0 ? "Error" : result.statusCode(),
+                    result.length(),
+                    result.timeTaken().toMillis(),
+                    result.error()
+            }));
+        }
+
+        private void wrapSelectionWithMarkers() {
+            try {
+                int start = requestEditor.getSelectionStart();
+                int end = requestEditor.getSelectionEnd();
+                if (start == end) {
+                    status.setText("Select text first.");
+                    return;
+                }
+                String raw = requestEditor.getRawText();
+                requestEditor.setRawText(raw.substring(0, start) + "§" + raw.substring(start, end) + "§" + raw.substring(end));
+                status.setText("Marked payload position.");
+            } catch (Exception ex) {
+                status.setText("Unable to mark position: " + ex.getMessage());
+            }
+        }
+
+        private void autoMarkParameters() {
+            String raw = requestEditor.getRawText();
+            if (raw.contains("=") && raw.contains("&")) {
+                String replaced = raw.replaceAll("=([^&\\r\\n]+)", "=§$1§");
+                requestEditor.setRawText(replaced);
+                status.setText("Auto-marked form parameters.");
+                return;
+            }
+            requestEditor.setRawText(raw.replaceFirst("(?m)^(.*)$", "§$1§"));
+            status.setText("Auto-marked first line.");
+        }
     }
 
-    private static JPanel buildIntruderPositions() {
-        JPanel panel = new JPanel(new BorderLayout(8, 8));
-        JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        toolbar.add(new JButton("Add §"));
-        toolbar.add(new JButton("Clear §"));
-        toolbar.add(new JButton("Auto §"));
-        toolbar.add(new JComboBox<>(new String[]{"Sniper", "Battering ram", "Pitchfork", "Cluster bomb"}));
-        panel.add(toolbar, BorderLayout.NORTH);
-        MessageEditorPanel editor = new MessageEditorPanel(true);
-        editor.setRawText("""
+    private static String sampleIntruderRequest() {
+        return """
                 POST /login HTTP/1.1
                 Host: example.com
+                Content-Type: application/x-www-form-urlencoded
 
                 username=§admin§&password=§password§
-                """);
-        panel.add(editor, BorderLayout.CENTER);
-        return panel;
-    }
-
-    private static JPanel buildIntruderPayloads() {
-        JPanel panel = new JPanel(new BorderLayout(8, 8));
-        JPanel split = new JPanel(new GridLayout(1, 2, 8, 8));
-        split.add(buildSimpleForm("Payload set: 1\nPayload type: Simple list"));
-        JTextArea payloads = new JTextArea("admin\nroot\nsuperuser");
-        split.add(new JScrollPane(payloads));
-        panel.add(split, BorderLayout.CENTER);
-        panel.add(buildSimpleForm("Payload processing and encoding rules"), BorderLayout.SOUTH);
-        return panel;
-    }
-
-    private static JPanel buildIntruderOptions() {
-        JTabbedPane tabs = new JTabbedPane();
-        tabs.addTab("Request Engine", buildSimpleForm("Threads, delays, throttling, timeout, retries"));
-        tabs.addTab("Grep - Match", buildSimpleForm("Patterns to search in responses"));
-        tabs.addTab("Grep - Extract", buildSimpleForm("Extraction rules and captured values"));
-        tabs.addTab("Redirections", buildSimpleForm("Follow redirections: Always / Never / On-site only / In-scope only"));
-        return panelWithBorder(tabs);
+                """;
     }
 
     private static JPanel buildAttackSection(String title, JComponent content) {
@@ -957,6 +975,19 @@ public final class ModulePanelFactory {
                 """;
     }
 
+    private static String safeHost(String url) {
+        try {
+            String value = url == null ? "" : url.trim();
+            if (value.isEmpty()) {
+                return "-";
+            }
+            String host = java.net.URI.create(value).getHost();
+            return host == null ? value : host;
+        } catch (Exception ex) {
+            return url == null || url.isBlank() ? "-" : url;
+        }
+    }
+
     private static JComponent buildProxyStatusUpdaterPlaceholder() {
         return new JLabel("Proxy running");
     }
@@ -990,6 +1021,282 @@ public final class ModulePanelFactory {
         int tabCount() {
             return getTabCount();
         }
+    }
+
+    private static final class RepeaterWorkspacePanel extends JPanel {
+        private final WorkspaceTabs tabs = new WorkspaceTabs();
+        private final ToolRouter toolRouter;
+        private final HistoryRepository historyRepository;
+        private final AtomicInteger sequence = new AtomicInteger(1);
+        private final ToolRouterListener listener;
+
+        private RepeaterWorkspacePanel(ToolRouter toolRouter, HistoryRepository historyRepository) {
+            super(new BorderLayout(8, 8));
+            this.toolRouter = toolRouter;
+            this.historyRepository = historyRepository;
+
+            JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT));
+            JButton addBlank = new JButton("Add repeater");
+            JButton addFromQueue = new JButton("Open queued item");
+            toolbar.add(addBlank);
+            toolbar.add(addFromQueue);
+            toolbar.add(new JLabel("Ctrl+Space sends the request"));
+            add(toolbar, BorderLayout.NORTH);
+            add(tabs, BorderLayout.CENTER);
+
+            addBlank.addActionListener(e -> addRepeaterTab(null));
+            addFromQueue.addActionListener(e -> {
+                List<HttpExchangeRecord> queue = toolRouter.getToolQueue(ToolType.REPEATER);
+                if (!queue.isEmpty()) {
+                    addRepeaterTab(queue.get(queue.size() - 1));
+                }
+            });
+
+            listener = (toolType, exchangeRecord) -> SwingUtilities.invokeLater(() -> addRepeaterTab(exchangeRecord));
+            toolRouter.addListener(ToolType.REPEATER, listener);
+
+            List<HttpExchangeRecord> initial = toolRouter.getToolQueue(ToolType.REPEATER);
+            if (initial.isEmpty()) {
+                addRepeaterTab(null);
+            } else {
+                initial.forEach(this::addRepeaterTab);
+            }
+        }
+
+        private void addRepeaterTab(HttpExchangeRecord exchangeRecord) {
+            RepeaterTabPanel panel = new RepeaterTabPanel(exchangeRecord, historyRepository);
+            String title = panel.titleHint(sequence.getAndIncrement());
+            tabs.addWorkspaceTab(title, IconFactory.of("repeater", new Color(103, 141, 255), 18), panel, true);
+        }
+    }
+
+    private static final class RepeaterTabPanel extends JPanel {
+        private final HistoryRepository historyRepository;
+        private final MessageEditorPanel requestEditor = new MessageEditorPanel(true);
+        private final MessageEditorPanel responseEditor = new MessageEditorPanel(false);
+        private final JTextField urlField = new JTextField(34);
+        private final JComboBox<String> protocol = new JComboBox<>(new String[]{"http", "https"});
+        private final JLabel status = new JLabel("Ready");
+        private final JLabel metadata = new JLabel("Target: -");
+        private HttpExchangeRecord loadedExchange;
+
+        private RepeaterTabPanel(HttpExchangeRecord exchangeRecord, HistoryRepository historyRepository) {
+            super(new BorderLayout(8, 8));
+            this.historyRepository = historyRepository;
+
+            JPanel top = new JPanel(new FlowLayout(FlowLayout.LEFT));
+            JButton send = new JButton("Send");
+            JButton cancel = new JButton("Cancel");
+            JButton applyUrl = new JButton("Go");
+            top.add(protocol);
+            top.add(urlField);
+            top.add(applyUrl);
+            top.add(send);
+            top.add(cancel);
+            top.add(metadata);
+            add(top, BorderLayout.NORTH);
+
+            JSplitPane split = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT,
+                    wrapWithTitle(requestEditor, "Request"),
+                    wrapWithTitle(responseEditor, "Response"));
+            split.setResizeWeight(0.5);
+            add(split, BorderLayout.CENTER);
+            add(status, BorderLayout.SOUTH);
+
+            send.addActionListener(e -> sendRequest());
+            applyUrl.addActionListener(e -> syncUrlIntoRequest());
+
+            loadExchange(exchangeRecord);
+        }
+
+        private String titleHint(int index) {
+            if (loadedExchange == null) {
+                return "Repeater " + index;
+            }
+            return "Repeater " + index + " - " + safeHost(loadedExchange.request().url());
+        }
+
+        private void loadExchange(HttpExchangeRecord exchangeRecord) {
+            loadedExchange = exchangeRecord;
+            if (exchangeRecord == null) {
+                urlField.setText("https://example.com/");
+                requestEditor.setRawText(sampleRequest());
+                responseEditor.setRawText(sampleResponse());
+                metadata.setText("Target: example.com");
+                return;
+            }
+            requestEditor.setRawText(HttpMessageCodec.toRawRequest(exchangeRecord.request()));
+            if (exchangeRecord.response() != null) {
+                responseEditor.setRawText(HttpMessageCodec.toRawResponse(exchangeRecord.response()));
+            }
+            urlField.setText(exchangeRecord.request().url());
+            protocol.setSelectedItem(exchangeRecord.request().url().startsWith("https") ? "https" : "http");
+            metadata.setText("Target: " + safeHost(exchangeRecord.request().url()));
+        }
+
+        private void syncUrlIntoRequest() {
+            try {
+                HttpRequestRecord request = HttpMessageCodec.parseRawRequest(requestEditor.getRawText());
+                HttpRequestRecord updated = new HttpRequestRecord(
+                        request.method(),
+                        urlField.getText().isBlank() ? request.url() : urlField.getText(),
+                        request.headers(),
+                        request.body(),
+                        Instant.now()
+                );
+                requestEditor.setRawText(HttpMessageCodec.toRawRequest(updated));
+                metadata.setText("Target: " + safeHost(updated.url()));
+                status.setText("URL updated");
+            } catch (Exception ex) {
+                status.setText("Unable to update URL: " + ex.getMessage());
+            }
+        }
+
+        private void sendRequest() {
+            status.setText("Sending...");
+            try {
+                HttpRequestRecord request = HttpMessageCodec.parseRawRequest(requestEditor.getRawText());
+                new SwingWorker<HttpResponseRecord, Void>() {
+                    @Override
+                    protected HttpResponseRecord doInBackground() throws Exception {
+                        return new JavaHttpForwarder().forward(request).get();
+                    }
+
+                    @Override
+                    protected void done() {
+                        try {
+                            HttpResponseRecord response = get();
+                            responseEditor.setRawText(HttpMessageCodec.toRawResponse(response));
+                            status.setText("Completed: " + response.statusCode());
+                            if (historyRepository != null) {
+                                historyRepository.save(new HttpExchangeRecord(UUID.randomUUID(), request, response, "REPEATER"));
+                            }
+                        } catch (Exception ex) {
+                            status.setText("Send failed: " + ex.getMessage());
+                        }
+                    }
+                }.execute();
+            } catch (Exception ex) {
+                status.setText("Invalid request: " + ex.getMessage());
+            }
+        }
+    }
+
+    private static final class ComparerWorkspacePanel extends JPanel {
+        private final ToolRouter toolRouter;
+        private final DefaultComboBoxModel<ExchangeOption> leftModel = new DefaultComboBoxModel<>();
+        private final DefaultComboBoxModel<ExchangeOption> rightModel = new DefaultComboBoxModel<>();
+        private final JComboBox<ExchangeOption> leftSelector = new JComboBox<>(leftModel);
+        private final JComboBox<ExchangeOption> rightSelector = new JComboBox<>(rightModel);
+        private final MessageEditorPanel leftViewer = new MessageEditorPanel(false);
+        private final MessageEditorPanel rightViewer = new MessageEditorPanel(false);
+        private final JLabel stats = new JLabel("Total differences: 0");
+        private final ToolRouterListener listener;
+
+        private ComparerWorkspacePanel(ToolRouter toolRouter) {
+            super(new BorderLayout(8, 8));
+            this.toolRouter = toolRouter;
+
+            JPanel selectors = new JPanel(new GridLayout(1, 3, 8, 8));
+            selectors.add(buildComparerSelection("Item 1", leftSelector));
+            selectors.add(buildComparerControls());
+            selectors.add(buildComparerSelection("Item 2", rightSelector));
+            add(selectors, BorderLayout.NORTH);
+
+            JSplitPane diff = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT,
+                    wrapWithTitle(leftViewer, "Left"),
+                    wrapWithTitle(rightViewer, "Right"));
+            diff.setResizeWeight(0.5);
+            add(diff, BorderLayout.CENTER);
+
+            JPanel bottom = new JPanel(new BorderLayout());
+            bottom.add(stats, BorderLayout.CENTER);
+            bottom.add(new JButton("Export comparison to HTML"), BorderLayout.EAST);
+            add(bottom, BorderLayout.SOUTH);
+
+            leftSelector.addActionListener(e -> refreshComparison());
+            rightSelector.addActionListener(e -> refreshComparison());
+
+            listener = (toolType, exchangeRecord) -> SwingUtilities.invokeLater(() -> {
+                addOption(exchangeRecord);
+                refreshComparison();
+            });
+            toolRouter.addListener(ToolType.COMPARER, listener);
+
+            List<HttpExchangeRecord> initial = toolRouter.getToolQueue(ToolType.COMPARER);
+            if (initial.isEmpty()) {
+                addOption(sampleExchange("Item 1"));
+                addOption(sampleExchange("Item 2"));
+            } else {
+                initial.forEach(this::addOption);
+            }
+            if (leftModel.getSize() > 0) {
+                leftSelector.setSelectedIndex(0);
+            }
+            if (rightModel.getSize() > 1) {
+                rightSelector.setSelectedIndex(1);
+            }
+            refreshComparison();
+        }
+
+        private void addOption(HttpExchangeRecord exchangeRecord) {
+            ExchangeOption option = new ExchangeOption(exchangeRecord);
+            leftModel.addElement(option);
+            if (!Objects.equals(option, rightSelector.getSelectedItem())) {
+                rightModel.addElement(option);
+            }
+        }
+
+        private void refreshComparison() {
+            ExchangeOption left = (ExchangeOption) leftSelector.getSelectedItem();
+            ExchangeOption right = (ExchangeOption) rightSelector.getSelectedItem();
+            if (left == null || right == null) {
+                return;
+            }
+            String leftText = HttpMessageCodec.toRawRequest(left.exchange().request());
+            String rightText = HttpMessageCodec.toRawRequest(right.exchange().request());
+            leftViewer.setRawText(leftText);
+            rightViewer.setRawText(rightText);
+            stats.setText(buildDiffStats(leftText, rightText));
+        }
+    }
+
+    private record ExchangeOption(HttpExchangeRecord exchange) {
+        @Override
+        public String toString() {
+            return exchange.request().method() + " " + safeHost(exchange.request().url());
+        }
+    }
+
+    private static JPanel buildComparerSelection(String title, JComboBox<ExchangeOption> selector) {
+        JPanel panel = new JPanel(new BorderLayout(8, 8));
+        panel.setBorder(BorderFactory.createTitledBorder(title));
+        panel.add(new JLabel("Load from:"), BorderLayout.NORTH);
+        panel.add(selector, BorderLayout.CENTER);
+        panel.add(new JButton("Clear"), BorderLayout.SOUTH);
+        return panel;
+    }
+
+    private static String buildDiffStats(String left, String right) {
+        String[] leftLines = left.split("\\R");
+        String[] rightLines = right.split("\\R");
+        int max = Math.max(leftLines.length, rightLines.length);
+        int differences = 0;
+        for (int i = 0; i < max; i++) {
+            String l = i < leftLines.length ? leftLines[i] : "";
+            String r = i < rightLines.length ? rightLines[i] : "";
+            if (!Objects.equals(l, r)) {
+                differences++;
+            }
+        }
+        return "Total differences: " + differences;
+    }
+
+    private static HttpExchangeRecord sampleExchange(String label) {
+        return new HttpExchangeRecord(UUID.randomUUID(),
+                new HttpRequestRecord("GET", "https://example.com/" + label.toLowerCase(Locale.ROOT), Map.of("Host", "example.com"), new byte[0], Instant.now()),
+                new HttpResponseRecord(200, "OK", Map.of("Content-Type", "text/plain"), "ok".getBytes(), Instant.now()),
+                "SAMPLE");
     }
 
     private static JComponent createRepeaterTab(ToolRouter toolRouter, int index) {
@@ -1089,10 +1396,6 @@ public final class ModulePanelFactory {
         }
         panel.add(form, BorderLayout.SOUTH);
         return panelWithBorder(panel);
-    }
-
-    private static JPanel buildSimpleForm(String description) {
-        return buildSimpleForm(description, new JButton("Apply"));
     }
 
     private static DefaultMutableTreeNode treeBranch(String title, String... children) {

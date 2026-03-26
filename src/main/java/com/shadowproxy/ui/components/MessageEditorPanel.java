@@ -81,6 +81,14 @@ public class MessageEditorPanel extends JPanel {
         refreshDerivedViews();
     }
 
+    public int getSelectionStart() {
+        return rawArea.getSelectionStart();
+    }
+
+    public int getSelectionEnd() {
+        return rawArea.getSelectionEnd();
+    }
+
     public void focusSearch() {
         searchBar.setVisible(true);
         searchField.requestFocusInWindow();

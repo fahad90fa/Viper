@@ -22,6 +22,21 @@ public final class HttpMessageCodec {
         return builder.toString();
     }
 
+    public static String toRawResponse(com.shadowproxy.domain.http.HttpResponseRecord responseRecord) {
+        StringBuilder builder = new StringBuilder();
+        builder.append("HTTP/1.1 ")
+                .append(responseRecord.statusCode())
+                .append(" ")
+                .append(responseRecord.reasonPhrase() == null ? "" : responseRecord.reasonPhrase())
+                .append("\n");
+        responseRecord.headers().forEach((k, v) -> builder.append(k).append(": ").append(v).append("\n"));
+        builder.append("\n");
+        if (responseRecord.body() != null && responseRecord.body().length > 0) {
+            builder.append(new String(responseRecord.body(), StandardCharsets.UTF_8));
+        }
+        return builder.toString();
+    }
+
     public static HttpRequestRecord parseRawRequest(String raw) {
         String[] parts = raw.split("\\n\\n", 2);
         String head = parts.length > 0 ? parts[0] : "";

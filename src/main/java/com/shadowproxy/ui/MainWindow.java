@@ -129,14 +129,14 @@ public class MainWindow extends JFrame {
 
     private void installWorkspace() {
         workspaceTabs.addWorkspaceTab("Dashboard", icon("dashboard"), ModulePanelFactory.dashboardPanel(appConfig, historyRepository, toolRouter, proxyServer, scanIssueStore), false);
-        workspaceTabs.addWorkspaceTab("Target", icon("target"), ModulePanelFactory.targetPanel(historyRepository, scanIssueStore), false);
+        workspaceTabs.addWorkspaceTab("Target", icon("target"), ModulePanelFactory.targetPanel(historyRepository, scanIssueStore, toolRouter), false);
         workspaceTabs.addWorkspaceTab("Proxy", icon("proxy"), ModulePanelFactory.proxyPanel(appConfig, historyRepository, proxyServer, toolRouter, interceptionManager), false);
-        workspaceTabs.addWorkspaceTab("Intruder", icon("intruder"), ModulePanelFactory.intruderPanel(), true);
-        workspaceTabs.addWorkspaceTab("Repeater", icon("repeater"), ModulePanelFactory.repeaterPanel(toolRouter), true);
-        workspaceTabs.addWorkspaceTab("Scanner", icon("scanner"), ModulePanelFactory.scannerPanel(scanIssueStore), true);
+        workspaceTabs.addWorkspaceTab("Intruder", icon("intruder"), ModulePanelFactory.intruderPanel(toolRouter, historyRepository), true);
+        workspaceTabs.addWorkspaceTab("Repeater", icon("repeater"), ModulePanelFactory.repeaterPanel(toolRouter, historyRepository), true);
+        workspaceTabs.addWorkspaceTab("Scanner", icon("scanner"), ModulePanelFactory.scannerPanel(historyRepository, scanIssueStore, toolRouter), true);
         workspaceTabs.addWorkspaceTab("Sequencer", icon("sequencer"), ModulePanelFactory.sequencerPanel(), true);
         workspaceTabs.addWorkspaceTab("Decoder", icon("decoder"), ModulePanelFactory.decoderPanel(), true);
-        workspaceTabs.addWorkspaceTab("Comparer", icon("comparer"), ModulePanelFactory.comparerPanel(), true);
+        workspaceTabs.addWorkspaceTab("Comparer", icon("comparer"), ModulePanelFactory.comparerPanel(toolRouter), true);
         workspaceTabs.addWorkspaceTab("Extender", icon("extender"), ModulePanelFactory.extenderPanel(), true);
         workspaceTabs.addWorkspaceTab("Settings", icon("gear"), ModulePanelFactory.settingsPanel(appConfig, toolRouter), false);
         workspaceTabs.setSelectedIndex(Math.min(uiStateStore.loadSelectedTabIndex(), workspaceTabs.getTabCount() - 1));

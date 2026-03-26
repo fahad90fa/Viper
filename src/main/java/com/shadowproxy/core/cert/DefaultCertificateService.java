@@ -95,7 +95,7 @@ public class DefaultCertificateService implements CertificateService {
                     generatedCertificate.certificate(),
                     caCertificate
             ).build();
-        } catch (GeneralSecurityException | IOException | SSLException e) {
+        } catch (GeneralSecurityException | IOException e) {
             throw new IllegalStateException("Unable to generate server certificate for " + hostname, e);
         }
     }
@@ -167,9 +167,14 @@ public class DefaultCertificateService implements CertificateService {
         JcaX509ExtensionUtils extensionUtils = new JcaX509ExtensionUtils();
         ASN1Encodable subjectKeyIdentifier = extensionUtils.createSubjectKeyIdentifier(subjectPublicKey);
         builder.addExtension(Extension.subjectKeyIdentifier, false, subjectKeyIdentifier);
-        ContentSigner signer = new JcaContentSignerBuilder("SHA256withRSA")
-                .setProvider(BC_PROVIDER)
-                .build(signingPrivateKey);
+        final ContentSigner signer;
+        try {
+            signer = new JcaContentSignerBuilder("SHA256withRSA")
+                    .setProvider(BC_PROVIDER)
+                    .build(signingPrivateKey);
+        } catch (org.bouncycastle.operator.OperatorCreationException e) {
+            throw new GeneralSecurityException("Unable to create certificate signer", e);
+        }
         X509CertificateHolder holder = builder.build(signer);
         return new JcaX509CertificateConverter().setProvider(BC_PROVIDER).getCertificate(holder);
     }
