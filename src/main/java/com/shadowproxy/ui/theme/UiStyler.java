@@ -2,10 +2,9 @@ package com.shadowproxy.ui.theme;
 
 import org.jfree.chart.ChartPanel;
 
-import javax.swing.AbstractButton;
+import javax.swing.BorderFactory;
 import javax.swing.JButton;
 import javax.swing.JComponent;
-import javax.swing.JDialog;
 import javax.swing.JLabel;
 import javax.swing.JMenu;
 import javax.swing.JMenuBar;
@@ -18,13 +17,16 @@ import javax.swing.JTable;
 import javax.swing.JTabbedPane;
 import javax.swing.JToolBar;
 import javax.swing.JTree;
-import javax.swing.SwingUtilities;
 import javax.swing.UIManager;
+import javax.swing.plaf.basic.BasicSplitPaneDivider;
+import javax.swing.plaf.basic.BasicSplitPaneUI;
 import javax.swing.text.JTextComponent;
 import java.awt.Color;
 import java.awt.Component;
 import java.awt.Container;
 import java.awt.Font;
+import java.awt.Graphics;
+import java.awt.Insets;
 
 public final class UiStyler {
     private UiStyler() {
@@ -116,7 +118,11 @@ public final class UiStyler {
             scrollPane.getViewport().setBackground(panelBg);
             scrollPane.setBackground(panelBg);
         } else if (component instanceof JSplitPane splitPane) {
-            splitPane.setDividerSize(4);
+            splitPane.setDividerSize(8);
+            splitPane.setContinuousLayout(true);
+            splitPane.setOneTouchExpandable(false);
+            splitPane.setBorder(BorderFactory.createEmptyBorder());
+            splitPane.setUI(new BurpSplitPaneUI());
         } else if (component instanceof ChartPanel chartPanel) {
             chartPanel.setBackground(panelBg);
         }
@@ -135,5 +141,60 @@ public final class UiStyler {
     private static Color color(String key, Color fallback) {
         Color color = UIManager.getColor(key);
         return color != null ? color : fallback;
+    }
+
+    private static final class BurpSplitPaneUI extends BasicSplitPaneUI {
+        @Override
+        public BasicSplitPaneDivider createDefaultDivider() {
+            return new BurpSplitPaneDivider(this);
+        }
+    }
+
+    private static final class BurpSplitPaneDivider extends BasicSplitPaneDivider {
+        private final Color base = color("Panel.background", new Color(60, 63, 65));
+        private final Color line = color("Component.borderColor", new Color(85, 85, 85));
+        private final Color grip = color("Label.foreground", new Color(187, 187, 187));
+
+        private BurpSplitPaneDivider(BasicSplitPaneUI ui) {
+            super(ui);
+            setBorder(null);
+        }
+
+        @Override
+        public void paint(Graphics g) {
+            g.setColor(base);
+            g.fillRect(0, 0, getWidth(), getHeight());
+            g.setColor(line);
+            JSplitPane splitPane = getBasicSplitPaneUI().getSplitPane();
+            if (splitPane != null) {
+                if (splitPane.getOrientation() == JSplitPane.HORIZONTAL_SPLIT) {
+                    g.drawLine(getWidth() / 2, 0, getWidth() / 2, getHeight());
+                } else {
+                    g.drawLine(0, getHeight() / 2, getWidth(), getHeight() / 2);
+                }
+            }
+            paintGripDots(g);
+        }
+
+        private void paintGripDots(Graphics g) {
+            g.setColor(grip);
+            Insets insets = getInsets();
+            int centerX = (getWidth() - insets.left - insets.right) / 2 + insets.left;
+            int centerY = (getHeight() - insets.top - insets.bottom) / 2 + insets.top;
+            int dot = 2;
+            int gap = 4;
+            JSplitPane splitPane = getBasicSplitPaneUI().getSplitPane();
+            if (splitPane != null && splitPane.getOrientation() == JSplitPane.HORIZONTAL_SPLIT) {
+                int startY = centerY - gap;
+                for (int i = 0; i < 3; i++) {
+                    g.fillRect(centerX - dot / 2, startY + (i * gap), dot, dot);
+                }
+            } else {
+                int startX = centerX - gap;
+                for (int i = 0; i < 3; i++) {
+                    g.fillRect(startX + (i * gap), centerY - dot / 2, dot, dot);
+                }
+            }
+        }
     }
 }
