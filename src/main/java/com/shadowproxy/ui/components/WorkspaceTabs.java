@@ -9,6 +9,7 @@ import javax.swing.JTabbedPane;
 import javax.swing.JPanel;
 import javax.swing.JButton;
 import javax.swing.SwingUtilities;
+import javax.swing.UIManager;
 import java.awt.BorderLayout;
 import java.awt.Component;
 import java.awt.Dimension;
@@ -157,12 +158,16 @@ public final class WorkspaceTabs extends JTabbedPane {
             super(new BorderLayout(4, 0));
             this.component = Objects.requireNonNull(component);
             this.closeable = closeable;
-            setOpaque(false);
+            setOpaque(true);
+            setBackground(UIManager.getColor("Panel.background"));
+            setBorder(BorderFactory.createEmptyBorder(2, 6, 2, 6));
             titleLabel.setText(title);
             titleLabel.setIcon(icon);
             closeButton.setBorder(BorderFactory.createEmptyBorder(0, 4, 0, 4));
             closeButton.setFocusPainted(false);
             closeButton.setOpaque(false);
+            closeButton.setContentAreaFilled(false);
+            closeButton.setBorderPainted(false);
             closeButton.addActionListener(e -> {
                 int index = indexOfComponent(this.component);
                 if (index >= 0 && this.closeable) {

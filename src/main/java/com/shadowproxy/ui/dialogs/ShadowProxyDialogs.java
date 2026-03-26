@@ -2,6 +2,7 @@ package com.shadowproxy.ui.dialogs;
 
 import com.shadowproxy.ui.components.IconFactory;
 import com.shadowproxy.ui.theme.ThemeManager;
+import com.shadowproxy.ui.theme.UiStyler;
 
 import javax.swing.BorderFactory;
 import javax.swing.Box;
@@ -56,7 +57,7 @@ public final class ShadowProxyDialogs {
         root.add(new JLabel(IconFactory.of("shield", new java.awt.Color(80, 160, 255), 48)), BorderLayout.WEST);
         root.add(text, BorderLayout.CENTER);
         root.add(actions, BorderLayout.SOUTH);
-        dialog.setContentPane(root);
+        finishDialog(dialog, root);
         dialog.setVisible(true);
     }
 
@@ -88,7 +89,7 @@ public final class ShadowProxyDialogs {
         buttons.add(cancel);
         buttons.add(start);
         root.add(buttons, BorderLayout.SOUTH);
-        dialog.setContentPane(root);
+        finishDialog(dialog, root);
         dialog.setVisible(true);
     }
 
@@ -107,7 +108,7 @@ public final class ShadowProxyDialogs {
         buttons.add(new JButton("Cancel"));
         buttons.add(new JButton("Save & Apply"));
         root.add(buttons, BorderLayout.SOUTH);
-        dialog.setContentPane(root);
+        finishDialog(dialog, root);
         dialog.setVisible(true);
     }
 
@@ -122,7 +123,7 @@ public final class ShadowProxyDialogs {
                 {"Toggle Proxy", "Ctrl+Shift+P", "Global"}
         };
         javax.swing.JTable table = new javax.swing.JTable(rows, columns);
-        dialog.setContentPane(new JScrollPane(table));
+        finishDialog(dialog, new JScrollPane(table));
         dialog.setVisible(true);
     }
 
@@ -140,7 +141,7 @@ public final class ShadowProxyDialogs {
         buttons.add(new JButton("Replace All"));
         buttons.add(new JButton("Close"));
         root.add(buttons);
-        dialog.setContentPane(root);
+        finishDialog(dialog, root);
         dialog.setVisible(true);
     }
 
@@ -168,7 +169,7 @@ public final class ShadowProxyDialogs {
         JPanel root = new JPanel(new BorderLayout());
         root.add(tabs, BorderLayout.CENTER);
         root.add(export, BorderLayout.SOUTH);
-        dialog.setContentPane(root);
+        finishDialog(dialog, root);
         dialog.setVisible(true);
     }
 
@@ -181,7 +182,7 @@ public final class ShadowProxyDialogs {
         buttons.add(new JButton("OK"));
         buttons.add(new JButton("Cancel"));
         root.add(buttons, BorderLayout.SOUTH);
-        dialog.setContentPane(root);
+        finishDialog(dialog, root);
         dialog.setVisible(true);
     }
 
@@ -202,6 +203,12 @@ public final class ShadowProxyDialogs {
         dialog.setSize(width, height);
         dialog.setLocationRelativeTo(owner);
         return dialog;
+    }
+
+    private static void finishDialog(JDialog dialog, java.awt.Container content) {
+        dialog.setContentPane(content);
+        UiStyler.applyBurpStyle(dialog.getContentPane());
+        UiStyler.applyBurpStyle(content);
     }
 
     private static JPanel buildThemePanel(ThemeManager.ThemeChoice currentTheme) {
