@@ -11,4 +11,6 @@ public interface ScanIssueStore {
     List<ScanIssue> findAll();
 
     boolean exists(UUID id);
+
+    void clear();
 }

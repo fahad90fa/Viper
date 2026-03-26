@@ -31,6 +31,11 @@ public class InMemoryScanIssueStore implements ScanIssueStore {
         return items.values().stream().anyMatch(item -> item.id().equals(id));
     }
 
+    @Override
+    public synchronized void clear() {
+        items.clear();
+    }
+
     private String issueKey(ScanIssue issue) {
         return String.join("|",
                 safe(issue.name()),

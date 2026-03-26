@@ -7,6 +7,7 @@ import com.shadowproxy.core.routing.ToolRouter;
 import com.shadowproxy.core.routing.ToolType;
 import com.shadowproxy.core.scanner.ScanIssueStore;
 import com.shadowproxy.persistence.HistoryRepository;
+import com.shadowproxy.persistence.ProjectManager;
 import com.shadowproxy.ui.components.IconFactory;
 import com.shadowproxy.ui.components.StatusBarPanel;
 import com.shadowproxy.ui.components.WorkspaceTabs;
@@ -37,6 +38,7 @@ import javax.swing.JToolBar;
 import javax.swing.KeyStroke;
 import javax.swing.SwingUtilities;
 import javax.swing.Timer;
+import javax.swing.filechooser.FileNameExtensionFilter;
 import java.awt.BorderLayout;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
@@ -52,6 +54,7 @@ import java.awt.event.InputEvent;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.awt.image.BufferedImage;
+import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -64,11 +67,13 @@ public class MainWindow extends JFrame {
     private final InterceptionManager interceptionManager;
     private final ScanIssueStore scanIssueStore;
     private final UiStateStore uiStateStore;
+    private final ProjectManager projectManager;
     private final WorkspaceTabs workspaceTabs = new WorkspaceTabs();
     private final StatusBarPanel statusBar = new StatusBarPanel();
     private final Map<String, JComponent> tabContent = new LinkedHashMap<>();
     private final Timer statusTimer;
     private boolean projectDirty;
+    private Path currentProjectFile;
     private TrayIcon trayIcon;
     private boolean welcomeShown;
 
@@ -87,6 +92,12 @@ public class MainWindow extends JFrame {
         this.interceptionManager = interceptionManager;
         this.scanIssueStore = scanIssueStore;
         this.uiStateStore = uiStateStore;
+        this.projectManager = new ProjectManager(historyRepository, scanIssueStore);
+
+        historyRepository.addListener(exchangeRecord -> {
+            projectDirty = true;
+            statusBar.setProjectDirty(true);
+        });
 
         initializeFrame();
         installWorkspace();
@@ -100,11 +111,13 @@ public class MainWindow extends JFrame {
         statusTimer.start();
         refreshStatus();
         applyPersistedGeometry();
+        updateWindowTitle();
     }
 
     public void setProjectDirty(boolean dirty) {
         this.projectDirty = dirty;
         statusBar.setProjectDirty(dirty);
+        updateWindowTitle();
     }
 
     public void showWindow() {
@@ -268,6 +281,11 @@ public class MainWindow extends JFrame {
         uiStateStore.saveSelectedTabIndex(workspaceTabs.getSelectedIndex());
     }
 
+    private void updateWindowTitle() {
+        String projectName = currentProjectFile == null ? "Untitled" : currentProjectFile.getFileName().toString();
+        setTitle("ShadowProxy Professional v1.0 - " + projectName + (projectDirty ? " *" : ""));
+    }
+
     private void shutdown() {
         statusTimer.stop();
         if (proxyServer.isRunning()) {
@@ -420,41 +438,59 @@ public class MainWindow extends JFrame {
         map.put("newProject", new AbstractAction("New Project") {
             @Override
             public void actionPerformed(ActionEvent e) {
-                projectDirty = false;
-                statusBar.setProjectDirty(false);
-                ShadowProxyDialogs.showComment(MainWindow.this);
+                if (!confirmDiscardCurrentProject()) {
+                    return;
+                }
+                historyRepository.clear();
+                scanIssueStore.clear();
+                currentProjectFile = null;
+                setProjectDirty(false);
+                updateWindowTitle();
             }
         });
         map.put("openProject", new AbstractAction("Open Project...") {
             @Override
             public void actionPerformed(ActionEvent e) {
                 JFileChooser chooser = ShadowProxyDialogs.createFileChooser();
-                chooser.showOpenDialog(MainWindow.this);
+                chooser.setFileFilter(new FileNameExtensionFilter("ShadowProxy Project (*.shadowproject)", "shadowproject", "json"));
+                if (chooser.showOpenDialog(MainWindow.this) == JFileChooser.APPROVE_OPTION) {
+                    openProject(chooser.getSelectedFile().toPath());
+                }
             }
         });
         map.put("saveProject", new AbstractAction("Save Project") {
             @Override
             public void actionPerformed(ActionEvent e) {
-                projectDirty = false;
-                statusBar.setProjectDirty(false);
-                JOptionPane.showMessageDialog(MainWindow.this, "Project saved.");
+                if (currentProjectFile == null) {
+                    actions().get("saveProjectAs").actionPerformed(e);
+                    return;
+                }
+                saveProject(currentProjectFile);
             }
         });
         map.put("saveProjectAs", new AbstractAction("Save Project As...") {
             @Override
             public void actionPerformed(ActionEvent e) {
-                projectDirty = false;
-                statusBar.setProjectDirty(false);
-                JOptionPane.showMessageDialog(MainWindow.this, "Project saved as new file.");
+                JFileChooser chooser = ShadowProxyDialogs.createFileChooser();
+                chooser.setFileFilter(new FileNameExtensionFilter("ShadowProxy Project (*.shadowproject)", "shadowproject", "json"));
+                if (chooser.showSaveDialog(MainWindow.this) == JFileChooser.APPROVE_OPTION) {
+                    Path selected = chooser.getSelectedFile().toPath();
+                    currentProjectFile = ensureProjectExtension(selected);
+                    saveProject(currentProjectFile);
+                }
             }
         });
         map.put("closeProject", new AbstractAction("Close Project") {
             @Override
             public void actionPerformed(ActionEvent e) {
-                if (confirmClose()) {
-                    projectDirty = false;
-                    statusBar.setProjectDirty(false);
+                if (!confirmDiscardCurrentProject()) {
+                    return;
                 }
+                historyRepository.clear();
+                scanIssueStore.clear();
+                currentProjectFile = null;
+                setProjectDirty(false);
+                updateWindowTitle();
             }
         });
         map.put("importBurp", new AbstractAction("Import Burp Project") {
@@ -592,7 +628,10 @@ public class MainWindow extends JFrame {
             @Override public void actionPerformed(ActionEvent e) { historyRepository.clear(); projectDirty = true; }
         });
         map.put("clearIssues", new AbstractAction("Clear All Scanner Issues") {
-            @Override public void actionPerformed(ActionEvent e) { JOptionPane.showMessageDialog(MainWindow.this, "Scanner issues are cleared in the scanner store."); }
+            @Override public void actionPerformed(ActionEvent e) {
+                scanIssueStore.clear();
+                setProjectDirty(true);
+            }
         });
         map.put("docs", new AbstractAction("Documentation") {
             @Override public void actionPerformed(ActionEvent e) { ShadowProxyDialogs.showAbout(MainWindow.this); }
@@ -636,6 +675,42 @@ public class MainWindow extends JFrame {
             @Override public void actionPerformed(ActionEvent e) { ShadowProxyDialogs.showAbout(MainWindow.this); }
         });
         return map;
+    }
+
+    private boolean confirmDiscardCurrentProject() {
+        if (!projectDirty) {
+            return true;
+        }
+        int choice = JOptionPane.showConfirmDialog(this, "Discard current project changes?", "ShadowProxy", JOptionPane.YES_NO_OPTION);
+        return choice == JOptionPane.YES_OPTION;
+    }
+
+    private void saveProject(Path projectFile) {
+        projectManager.save(projectFile, projectFile.getFileName().toString());
+        currentProjectFile = projectFile;
+        setProjectDirty(false);
+        updateWindowTitle();
+        JOptionPane.showMessageDialog(this, "Project saved to " + projectFile);
+    }
+
+    private void openProject(Path projectFile) {
+        if (!confirmDiscardCurrentProject()) {
+            return;
+        }
+        projectManager.load(projectFile);
+        currentProjectFile = projectFile;
+        setProjectDirty(false);
+        updateWindowTitle();
+        workspaceTabs.setSelectedIndex(0);
+        JOptionPane.showMessageDialog(this, "Project opened from " + projectFile);
+    }
+
+    private Path ensureProjectExtension(Path selected) {
+        String name = selected.getFileName().toString().toLowerCase();
+        if (name.endsWith(".shadowproject") || name.endsWith(".json")) {
+            return selected;
+        }
+        return selected.resolveSibling(selected.getFileName().toString() + ".shadowproject");
     }
 
     private void focusOwnerAction(String action) {
