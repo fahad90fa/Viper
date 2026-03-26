@@ -15,6 +15,7 @@ import com.shadowproxy.ui.dialogs.ShadowProxyDialogs;
 import com.shadowproxy.ui.modules.ModulePanelFactory;
 import com.shadowproxy.ui.state.UiStateStore;
 import com.shadowproxy.ui.theme.ThemeManager;
+import com.shadowproxy.ui.theme.UiStyler;
 
 import javax.swing.AbstractAction;
 import javax.swing.BorderFactory;
@@ -107,6 +108,7 @@ public class MainWindow extends JFrame {
         installStatusBar();
         installTray();
         installCloseHandling();
+        restyleUi();
         statusTimer = new Timer(1000, e -> refreshStatus());
         statusTimer.start();
         refreshStatus();
@@ -573,6 +575,7 @@ public class MainWindow extends JFrame {
                 ThemeManager.applyTheme(ThemeManager.ThemeChoice.LIGHT);
                 uiStateStore.saveTheme(ThemeManager.ThemeChoice.LIGHT);
                 SwingUtilities.updateComponentTreeUI(MainWindow.this);
+                restyleUi();
             }
         });
         map.put("themeDark", new AbstractAction("Dark Theme") {
@@ -580,6 +583,7 @@ public class MainWindow extends JFrame {
                 ThemeManager.applyTheme(ThemeManager.ThemeChoice.DARK);
                 uiStateStore.saveTheme(ThemeManager.ThemeChoice.DARK);
                 SwingUtilities.updateComponentTreeUI(MainWindow.this);
+                restyleUi();
             }
         });
         map.put("themeSystem", new AbstractAction("System Default") {
@@ -587,6 +591,7 @@ public class MainWindow extends JFrame {
                 ThemeManager.applyTheme(ThemeManager.ThemeChoice.SYSTEM);
                 uiStateStore.saveTheme(ThemeManager.ThemeChoice.SYSTEM);
                 SwingUtilities.updateComponentTreeUI(MainWindow.this);
+                restyleUi();
             }
         });
         map.put("sendRepeater", new AbstractAction("Send to Repeater") {
@@ -711,6 +716,15 @@ public class MainWindow extends JFrame {
             return selected;
         }
         return selected.resolveSibling(selected.getFileName().toString() + ".shadowproject");
+    }
+
+    private void restyleUi() {
+        UiStyler.applyBurpStyle(getContentPane());
+        if (getJMenuBar() != null) {
+            UiStyler.applyBurpStyle(getJMenuBar());
+        }
+        UiStyler.applyBurpStyle(workspaceTabs);
+        UiStyler.applyBurpStyle(statusBar);
     }
 
     private void focusOwnerAction(String action) {
